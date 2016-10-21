@@ -52,11 +52,6 @@ exit 0;
 sub track_workspace {
     my($e) = @_;
 
-#    printf("T=%-10s W(%s),#(%s),N(%s) -> W(%s),#(%s),N(%s)\n", $e->{change},
-#	   $e->{old}{output}, $e->{old}{num}, $e->{old}{name},
-#	   $e->{current}{output}, $e->{current}{num}, $e->{current}{name},
-#	  );
-
     if ($e->{change} eq 'focus') {
 	# change to new workspace
 	my $output = $e->{current}{output};
@@ -66,9 +61,9 @@ sub track_workspace {
     }
     elsif ($e->{change} eq 'empty') {
 	# old workspace deleted, usually preceeded by a focus
-	for my $output (keys %{$state{workspaces}}) {
-	    $state{workspaces}{$output} = [ grep { $_ != $e->{current}{num} } @{$state{workspaces}{$output}} ];
-	}
+	my $output = $e->{current}{output};
+	my $ws = $e->{current}{num};
+	$state{workspaces}{$output} = [ grep { $_ != $ws } @{$state{workspaces}{$output}} ];
     }
     elsif ($e->{change} eq 'init') {
 	# new workspace created, followd by a focus. no need to do anything here...
