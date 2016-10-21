@@ -1,0 +1,132 @@
+#! /usr/bin/perl
+
+# Append these lines to your i3 config file:
+#     exec_always --no-startup-id ~/.config/i3/helpers/ebaf
+#     bindsym $mod+a nop ebaf
+
+use strict;
+use v5.10;
+
+use AnyEvent;
+use AnyEvent::I3 qw(:all);
+
+use Data::Dumper;
+$Data::Dumper::Sortkeys = $Data::Dumper::Indent = 1;
+
+my(%state,$ret);
+
+my $i3 = i3();
+
+print "ebaf:Connecting...\n";
+$i3->connect->recv() or
+  die "ebaf:could not connect to i3: $!\n";
+
+$ret = i3->get_workspaces->recv;
+
+if ($ret) {
+    # most likely, the order is most resently used first
+    for my $ws (@$ret) {
+	push @{$state{workspaces}{$ws->{output}}}, $ws->{num};
+	$state{focused} = $ws->{output} if $ws->{focused};
+    }
+}
+
+my %callbacks =
+  ( workspace => \&track_workspace,
+    binding => \&run_commands,
+    _error => \&reconnect_or_exit,
+  );
+
+printf "ebaf:Hooking event...\n";
+$ret = $i3->subscribe(\%callbacks)->recv;
+unless ($ret->{success}) {
+    die "ebaf: Could not subscribe to the events: $!\n";
+}
+
+
+# Run forever.
+AnyEvent->condvar->recv;
+
+exit 0;
+
+sub track_workspace {
+    my($e) = @_;
+
+#    printf("T=%-10s W(%s),#(%s),N(%s) -> W(%s),#(%s),N(%s)\n", $e->{change},
+#	   $e->{old}{output}, $e->{old}{num}, $e->{old}{name},
+#	   $e->{current}{output}, $e->{current}{num}, $e->{current}{name},
+#	  );
+
+    if ($e->{change} eq 'focus') {
+	# change to new workspace
+	my $output = $e->{current}{output};
+	my $ws = $e->{current}{num};
+	$state{workspaces}{$output} = [ $ws, grep { $_ != $ws } @{$state{workspaces}{$output}} ];
+	$state{focused} = $output;
+    }
+    elsif ($e->{change} eq 'empty') {
+	# old workspace deleted, usually preceeded by a focus
+	for my $output (keys %{$state{workspaces}}) {
+	    $state{workspaces}{$output} = [ grep { $_ != $e->{current}{num} } @{$state{workspaces}{$output}} ];
+	}
+    }
+    elsif ($e->{change} eq 'init') {
+	# new workspace created, followd by a focus. no need to do anything here...
+	#
+    }
+    elsif ($e->{change} eq 'move') {
+	# usually botch preceeded and followed by a focus.  from the moved
+	# one to a someting else on old workspace, and focus from old
+	# workspace to new one
+	# new contains where this workspace now lives.
+    }
+    elsif ($e->{change} eq 'rename') {
+	# new contains new name... nothing on old name.
+	# so track workspaces by number...
+    }
+    elsif ($e->{change} eq 'urgent') {
+	# no need to track
+    }
+    else {
+	for (
+
+	     qw{border current_border_width deco_rect focus floating
+floating_nodes fullscreen_mode geometry id last_split_layout layout nodes
+orientation percent rect scratchpad_state sticky swallows urgent window
+window_rect workspace_layout focused}
+
+	    ) {
+	    delete $e->{current}{$_};
+	    delete $e->{old}{$_};
+	}
+	delete $e->{container};
+	print Dumper $e
+    }
+}
+
+sub run_commands {
+    my($e) = @_;
+    # print "------\n";
+    return unless $e->{change} eq 'run';
+    if ($e->{binding}{command} =~ s/^\s*nop\s+ebaf\s*//) {
+	my %flags = map { $_ => 1 } split " ", $e->{binding}{command};
+
+	# printf "EBAF\n------\n";
+
+	my $current = $state{focused};
+	my $ws = $state{workspaces}{$current}[1];
+
+	if ($ws) {
+	    $i3->command("workspace number $ws")
+	      ->cb(sub {
+		       shift->recv;
+		   });
+	}
+
+    }
+}
+
+sub reconnect_or_exit {
+    my($e) = @_;
+    exit;
+}
