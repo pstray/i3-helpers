@@ -2,7 +2,8 @@
 
 # Append these lines to your i3 config file:
 #     exec_always --no-startup-id ~/.config/i3/helpers/ebaf
-#     bindsym $mod+a nop ebaf
+#     bindsym $mod+a nop ebaf back_and_forth
+#     bindsym $mod+Control+1 nop ebaf output 1
 
 use strict;
 use v5.10;
@@ -21,18 +22,9 @@ print "ebaf:Connecting...\n";
 $i3->connect->recv() or
   die "ebaf:could not connect to i3: $!\n";
 
-$ret = i3->get_workspaces->recv;
-
-if ($ret) {
-    # most likely, the order is most resently used first
-    for my $ws (@$ret) {
-	push @{$state{workspaces}{$ws->{output}}}, $ws->{num};
-	$state{focused} = $ws->{output} if $ws->{focused};
-    }
-}
-
 my %callbacks =
   ( workspace => \&track_workspace,
+    output => \&track_outputs,
     binding => \&run_commands,
     _error => \&reconnect_or_exit,
   );
@@ -43,6 +35,17 @@ unless ($ret->{success}) {
     die "ebaf: Could not subscribe to the events: $!\n";
 }
 
+# looking up current outputs
+update_outputs();
+
+$ret = i3->get_workspaces->recv;
+if ($ret) {
+    # most likely, the order is most resently used first
+    for my $ws (@$ret) {
+	push @{$state{workspaces}{$ws->{output}}}, $ws->{num};
+	$state{focused} = $ws->{output} if $ws->{focused};
+    }
+}
 
 # Run forever.
 AnyEvent->condvar->recv;
@@ -66,62 +69,113 @@ sub track_workspace {
 	$state{workspaces}{$output} = [ grep { $_ != $ws } @{$state{workspaces}{$output}} ];
     }
     elsif ($e->{change} eq 'init') {
-	# new workspace created, followd by a focus. no need to do anything here...
-	#
+	# new workspace created, followd by a focus. no need to do anything
+	# here...
     }
     elsif ($e->{change} eq 'move') {
 	# usually botch preceeded and followed by a focus.  from the moved
 	# one to a someting else on old workspace, and focus from old
-	# workspace to new one
-	# new contains where this workspace now lives.
+	# workspace to new one.  new contains where this workspace now
+	# lives.
     }
     elsif ($e->{change} eq 'rename') {
-	# new contains new name... nothing on old name.
-	# so track workspaces by number...
+	# new contains new name... nothing on old name.  so track workspaces
+	# by number...
     }
     elsif ($e->{change} eq 'urgent') {
-	# no need to track
+	# no need to track... yet...
     }
     else {
-	for (
-
-	     qw{border current_border_width deco_rect focus floating
-floating_nodes fullscreen_mode geometry id last_split_layout layout nodes
-orientation percent rect scratchpad_state sticky swallows urgent window
-window_rect workspace_layout focused}
-
-	    ) {
+	for (qw{border current_border_width deco_rect focus floating
+		floating_nodes fullscreen_mode geometry id last_split_layout
+		layout nodes orientation percent rect scratchpad_state sticky
+		swallows urgent window window_rect workspace_layout focused}) {
 	    delete $e->{current}{$_};
 	    delete $e->{old}{$_};
 	}
 	delete $e->{container};
-	print Dumper $e
+	printf "ebaf:Unhandled event: %s\n", Data::Dumper->Dump([$e],[qw(event)]);
     }
+}
+
+sub track_outputs {
+    my($e) = @_;
+    # event info for this one is usesless...
+    # always $e->{change} eq "unspecified"
+    update_outputs();
+}
+
+sub update_outputs {
+    $i3->get_outputs
+      ->cb(sub {
+	       my $output_list = shift->recv;
+	       my @outputs;
+	       for my $o (@$output_list) {
+		   next unless $o->{active};
+		   push @outputs, { name => $o->{name},
+				    width => $o->{rect}{width},
+				    height => $o->{rect}{height},
+				    xpos => $o->{rect}{x},
+				    ypos => $o->{rect}{y},
+				  };
+	       }
+	       $state{outputs} =
+		 [ map { $_->{name} }
+		   sort { $a->{ypos} <=> $b->{ypos} ||
+			  $a->{xpos} <=> $b->{xpos} }
+		   @outputs
+		 ];
+	   });
+}
+
+sub reconnect_or_exit {
+    my($e) = @_;
+    exit;
 }
 
 sub run_commands {
     my($e) = @_;
     # print "------\n";
     return unless $e->{change} eq 'run';
-    if ($e->{binding}{command} =~ s/^\s*nop\s+ebaf\s*//) {
-	my %flags = map { $_ => 1 } split " ", $e->{binding}{command};
+    my $cmd_string = $e->{binding}{command};
+    return unless $cmd_string =~ s/^nop\s+ebaf\s*//;
+    my($cmd,@params) = split " ", $cmd_string;
 
-	# printf "EBAF\n------\n";
+    printf "ebaf:Running $cmd @params\n";
 
-	my $current = $state{focused};
-	my $ws = $state{workspaces}{$current}[1];
-
-	if ($ws) {
-	    $i3->command("workspace number $ws")
-	      ->cb(sub {
-		       shift->recv;
-		   });
-	}
-
+    if ($cmd eq 'back_and_forth') {
+	_cmd_back_and_forth(@params);
+    }
+    elsif ($cmd eq 'output') {
+	_cmd_go_to_output(@params);
     }
 }
 
-sub reconnect_or_exit {
-    my($e) = @_;
-    exit;
+sub _cmd_back_and_forth {
+    my $current = $state{focused};
+    my $ws = $state{workspaces}{$current}[1];
+
+    if ($ws) {
+	$i3->command("workspace number $ws")
+	  ->cb(sub { shift->recv; });
+    }
+}
+
+sub _cmd_go_to_output {
+    my($output) = @_;
+    my($ws);
+
+    if ($output =~ /^\d+$/) {
+	my $o = $state{outputs}[$output-1];
+	$ws = $state{workspaces}{$o}[0] if $o;
+    }
+    else {
+	$ws = $state{workspaces}{$output}[0];
+    }
+
+    return unless defined $ws;
+
+    $i3->command("workspace number $ws")
+      ->cb(sub { shift->recv; });
+
 }
