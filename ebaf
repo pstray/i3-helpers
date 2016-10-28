@@ -169,6 +169,20 @@ sub _cmd_go_to_output {
 	my $o = $state{outputs}[$output-1];
 	$ws = $state{workspaces}{$o}[0] if $o;
     }
+    elsif ($output eq 'next') {
+	my $co = $state{focused};
+	my $ol = $state{outputs};
+	my $n = grep { $ol->[$_] eq $co } 0 .. @$ol-1;
+	my $o = $ol->[($n+1) % @$ol];
+	$ws = $state{workspaces}{$o}[0]
+    }
+    elsif ($output eq 'prev') {
+	my $co = $state{focused};
+	my $ol = $state{outputs};
+	my $n = grep { $ol->[$_] eq $co } 0 .. @$ol-1;
+	my $o = $ol->[($n-1) % @$ol];
+	$ws = $state{workspaces}{$o}[0]
+    }
     else {
 	$ws = $state{workspaces}{$output}[0];
     }
